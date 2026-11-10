@@ -17,8 +17,8 @@
         <h1 class="font-bold text-lg leading-tight">レシート抜粋計算機</h1>
         <p class="text-xs text-indigo-200">食品8%・日用品10%を分けて自動合算</p>
       </div>
-      <button onclick="loadSample()" class="text-xs bg-indigo-700 hover:bg-indigo-800 text-white px-2.5 py-1.5 rounded-lg border border-indigo-400 font-medium">
-        サンプル読込
+      <button onclick="clearAll()" class="text-xs bg-indigo-700 hover:bg-indigo-800 text-white px-2.5 py-1.5 rounded-lg border border-indigo-400 font-medium transition">
+        全クリア
       </button>
     </div>
 
@@ -57,7 +57,7 @@
       <details class="text-xs bg-slate-50 border border-slate-200 rounded-xl p-3">
         <summary class="font-bold text-slate-700 cursor-pointer">レシート文字を一括貼り付け</summary>
         <div class="mt-2 space-y-2">
-          <p class="text-slate-500">スマホの写真文字認識等でコピーしたレシート文面を貼り付けてください。「◎」や「※」が付いた品目を8%と判定します。</p>
+          <p class="text-slate-500">スマホの写真文字認識等でコピーしたレシート文面を貼り付けてください。「◎」や「※」が付いた品目を8%と自動判定します。</p>
           <textarea id="ocr-input" rows="4" class="w-full border rounded-lg p-2 text-xs font-mono" placeholder="例:&#10;◎アサヒ 十六茶 2L 139&#10;ティッシュペーパー 398"></textarea>
           <button onclick="parseReceiptText()" class="w-full bg-indigo-600 text-white font-bold py-1.5 rounded-lg text-xs">
             リストに反映する
@@ -73,19 +73,19 @@
   <script>
     let items = [];
 
-    const sampleItems = [
-      { id: 1, name: "アサヒ 十六茶 2L", price: 139, rate: 8, checked: true },
-      { id: 2, name: "ブルボン アルフォート", price: 198, rate: 8, checked: false },
-      { id: 3, name: "丸美屋 麻婆豆腐の素 甘", price: 178, rate: 8, checked: true },
-      { id: 4, name: "ホクレン 片栗粉 400", price: 198, rate: 8, checked: true },
-      { id: 5, name: "アサヒ ほっとレモン47", price: 259, rate: 8, checked: false },
-      { id: 6, name: "羽根つき 餃子12個", price: 178, rate: 8, checked: true },
-      { id: 7, name: "タカノフーズ もめんミニ", price: 118, rate: 8, checked: true }
-    ];
-
     function render() {
       const container = document.getElementById("items-list");
       container.innerHTML = "";
+
+      if (items.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-8 text-slate-400 text-xs border border-dashed border-slate-300 rounded-xl">
+            品目がありません。<br>「＋ 品目を追加」または上の「レシート文字を一括貼り付け」から入力してください。
+          </div>
+        `;
+        calculate();
+        return;
+      }
 
       items.forEach((item, index) => {
         const row = document.createElement("div");
@@ -98,7 +98,7 @@
           <input type="text" value="${item.name}" oninput="updateName(${index}, this.value)" class="flex-1 min-w-0 bg-transparent text-sm border-b border-transparent focus:border-indigo-400 focus:outline-none ${!item.checked ? 'line-through text-slate-400' : 'text-slate-800 font-medium'}" placeholder="品名">
           <div class="flex items-center gap-1">
             <span class="text-xs text-slate-400">¥</span>
-            <input type="number" value="${item.price}" oninput="updatePrice(${index}, this.value)" class="w-16 text-right bg-transparent text-sm font-bold border-b border-transparent focus:border-indigo-400 focus:outline-none ${!item.checked ? 'line-through text-slate-400' : 'text-slate-800'}" placeholder="金額">
+            <input type="number" value="${item.price || ''}" oninput="updatePrice(${index}, this.value)" class="w-16 text-right bg-transparent text-sm font-bold border-b border-transparent focus:border-indigo-400 focus:outline-none ${!item.checked ? 'line-through text-slate-400' : 'text-slate-800'}" placeholder="0">
           </div>
           <button onclick="toggleRate(${index})" class="text-[11px] font-bold px-2 py-1 rounded-md border ${
             item.rate === 8 ? "bg-emerald-50 text-emerald-700 border-emerald-300" : "bg-sky-50 text-sky-700 border-sky-300"
@@ -141,12 +141,15 @@
     function updatePrice(idx, val) { items[idx].price = Number(val) || 0; calculate(); }
     function deleteItem(idx) { items.splice(idx, 1); render(); }
     function addNewItem() {
-      items.push({ id: Date.now(), name: "", price: 0, rate: 8, checked: true });
+      items.push({ id: Date.now(), name: "", price: "", rate: 8, checked: true });
       render();
     }
-    function loadSample() {
-      items = JSON.parse(JSON.stringify(sampleItems));
-      render();
+    function clearAll() {
+      if (items.length === 0) return;
+      if (confirm("入力したすべての品目を削除しますか？")) {
+        items = [];
+        render();
+      }
     }
 
     function parseReceiptText() {
@@ -185,20 +188,22 @@
       let sub8 = 0, sub10 = 0;
       let text = "【レシート抜粋内訳】\n";
       activeItems.forEach(i => {
-        text += `・${i.name} (${i.rate}%): ¥${i.price}\n`;
-        if (i.rate === 8) sub8 += i.price; else sub10 += i.price;
+        text += `・${i.name || '品名未入力'} (${i.rate}%): ¥${i.price}\n`;
+        if (i.rate === 8) sub8 += (Number(i.price) || 0);
+        else sub10 += (Number(i.price) || 0);
       });
       const t8 = Math.floor(sub8 * 0.08);
       const t10 = Math.floor(sub10 * 0.10);
       text += `-----------------\n`;
-      text += `8%対象: ¥${sub8} (消費税: ¥${t8})\n`;
-      text += `10%対象: ¥${sub10} (消費税: ¥${t10})\n`;
-      text += `総合計: ¥${sub8 + t8 + sub10 + t10}`;
+      text += `8%対象: ¥${sub8.toLocaleString()} (消費税: ¥${t8.toLocaleString()})\n`;
+      text += `10%対象: ¥${sub10.toLocaleString()} (消費税: ¥${t10.toLocaleString()})\n`;
+      text += `総合計: ¥${(sub8 + t8 + sub10 + t10).toLocaleString()}`;
 
       navigator.clipboard.writeText(text).then(() => alert("内訳をクリップボードにコピーしました！"));
     }
 
-    loadSample();
+    // 初期化（空の状態で表示）
+    render();
   </script>
 </body>
 </html>
