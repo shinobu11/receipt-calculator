@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>レシート抜粋・税率計算機</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- ブラウザ内OCRライブラリ（Tesseract.js） -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     @media print { .no-print { display: none; } }
   </style>
@@ -43,10 +45,31 @@
         </div>
       </div>
 
+      <!-- スマホ読み取り（カメラ / 写真） -->
+      <div>
+        <input type="file" id="camera-input" accept="image/*" class="hidden" onchange="handleImageUpload(event)">
+        <button onclick="document.getElementById('camera-input').click()" class="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-bold py-3 rounded-xl shadow-md text-sm transition">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          📷 レシートを撮影 / 写真を選ぶ
+        </button>
+
+        <!-- 読み取り中インジケーター -->
+        <div id="ocr-status-box" class="hidden mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-center space-y-2">
+          <div class="text-xs font-bold text-indigo-700" id="ocr-status-text">文字を解析しています... (0%)</div>
+          <div class="w-full bg-indigo-200 rounded-full h-2 overflow-hidden">
+            <div id="ocr-progress-bar" class="bg-indigo-600 h-2 rounded-full transition-all duration-200" style="width: 0%"></div>
+          </div>
+          <p class="text-[11px] text-slate-500">※初回のみ辞書データのダウンロードに数秒かかります</p>
+        </div>
+      </div>
+
       <!-- 操作ボタン -->
       <div class="flex gap-2">
         <button onclick="addNewItem()" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-300 font-bold py-2 rounded-xl text-sm transition">
-          ＋ 品目を追加
+          ＋ 手動で品目を追加
         </button>
         <button onclick="copySummary()" class="bg-slate-800 hover:bg-slate-900 text-white font-medium py-2 px-3 rounded-xl text-sm transition">
           内訳をコピー
@@ -55,11 +78,11 @@
 
       <!-- テキスト一括貼付トグル -->
       <details class="text-xs bg-slate-50 border border-slate-200 rounded-xl p-3">
-        <summary class="font-bold text-slate-700 cursor-pointer">レシート文字を一括貼り付け</summary>
+        <summary class="font-bold text-slate-700 cursor-pointer">読み取ったテキストを確認・直接編集</summary>
         <div class="mt-2 space-y-2">
-          <p class="text-slate-500">スマホの写真文字認識等でコピーしたレシート文面を貼り付けてください。「◎」や「※」が付いた品目を8%と自動判定します。</p>
+          <p class="text-slate-500">写真読み取りのテキストがここに表示されます。直接貼り付けて反映させることも可能です。</p>
           <textarea id="ocr-input" rows="4" class="w-full border rounded-lg p-2 text-xs font-mono" placeholder="例:&#10;◎アサヒ 十六茶 2L 139&#10;ティッシュペーパー 398"></textarea>
-          <button onclick="parseReceiptText()" class="w-full bg-indigo-600 text-white font-bold py-1.5 rounded-lg text-xs">
+          <button onclick="parseReceiptText(document.getElementById('ocr-input').value)" class="w-full bg-indigo-600 text-white font-bold py-1.5 rounded-lg text-xs">
             リストに反映する
           </button>
         </div>
@@ -80,7 +103,7 @@
       if (items.length === 0) {
         container.innerHTML = `
           <div class="text-center py-8 text-slate-400 text-xs border border-dashed border-slate-300 rounded-xl">
-            品目がありません。<br>「＋ 品目を追加」または上の「レシート文字を一括貼り付け」から入力してください。
+            品目がありません。<br>「📷 レシートを撮影」または「＋ 手動で追加」してください。
           </div>
         `;
         calculate();
@@ -152,32 +175,92 @@
       }
     }
 
-    function parseReceiptText() {
-      const text = document.getElementById("ocr-input").value;
-      if (!text.trim()) return;
+    // カメラ/画像読み取り処理
+    async function handleImageUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const statusBox = document.getElementById("ocr-status-box");
+      const statusText = document.getElementById("ocr-status-text");
+      const progressBar = document.getElementById("ocr-progress-bar");
+
+      statusBox.classList.remove("hidden");
+      statusText.textContent = "画像を読み込んでいます...";
+      progressBar.style.width = "10%";
+
+      try {
+        const worker = await Tesseract.createWorker('jpn+eng');
+        
+        // 進捗ハンドラ
+        worker.reinitialize = true;
+        const ret = await worker.recognize(file, {}, {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              const progress = Math.round(m.progress * 100);
+              statusText.textContent = `文字を解析しています... (${progress}%)`;
+              progressBar.style.width = `${progress}%`;
+            }
+          }
+        });
+
+        const text = ret.data.text;
+        document.getElementById("ocr-input").value = text;
+        parseReceiptText(text);
+
+        await worker.terminate();
+        statusBox.classList.add("hidden");
+      } catch (err) {
+        console.error(err);
+        alert("画像の文字認識に失敗しました。明るい場所でレシートを平らにして再度撮影してください。");
+        statusBox.classList.add("hidden");
+      } finally {
+        event.target.value = "";
+      }
+    }
+
+    // 読み取ったレシートテキストの自動パース
+    function parseReceiptText(text) {
+      if (!text || !text.trim()) return;
       const lines = text.split("\n");
       const newItems = [];
 
       lines.forEach(line => {
-        const trimmed = line.trim();
+        let trimmed = line.trim();
         if (!trimmed) return;
+
+        // 小計・合計・消費税・お預り・お釣りなどのレシートフッター行はスキップ
+        if (/合計|小計|税|対象|お預|釣|買上|レシート|登録|TEL|電話|領収/.test(trimmed)) {
+          return;
+        }
+
+        // 行末または行中の金額（半角・全角数字）を抽出
+        trimmed = trimmed.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
         const priceMatch = trimmed.match(/(\d[\d,]*)\s*$/);
         if (!priceMatch) return;
 
         const price = parseInt(priceMatch[1].replace(/,/g, ""), 10);
         let name = trimmed.substring(0, priceMatch.index).trim();
-        const is8 = /[◎※*軽]/.test(name) || /茶|水|食|菓子|肉|菜|米|パン/.test(name);
-        name = name.replace(/^[◎※*軽\s]+/, "");
 
-        if (name && !isNaN(price)) {
-          newItems.push({ id: Date.now() + Math.random(), name, price, rate: is8 ? 8 : 10, checked: true });
+        // 8%対象マークの自動判定（◎、※、*、軽 など）
+        const is8 = /[◎※*軽]/.test(name) || /茶|水|食|菓子|肉|菜|米|パン/.test(name);
+        name = name.replace(/^[◎※*軽\s\d]+/, "").replace(/[@＠]/g, "").trim();
+
+        if (name && !isNaN(price) && price > 0 && price < 1000000) {
+          newItems.push({
+            id: Date.now() + Math.random(),
+            name: name,
+            price: price,
+            rate: is8 ? 8 : 10,
+            checked: true
+          });
         }
       });
 
       if (newItems.length > 0) {
         items = newItems;
         render();
-        document.getElementById("ocr-input").value = "";
+      } else {
+        alert("品目と金額を自動抽出できませんでした。「読み取ったテキストを確認・直接編集」をご確認ください。");
       }
     }
 
@@ -202,7 +285,6 @@
       navigator.clipboard.writeText(text).then(() => alert("内訳をクリップボードにコピーしました！"));
     }
 
-    // 初期化（空の状態で表示）
     render();
   </script>
 </body>
